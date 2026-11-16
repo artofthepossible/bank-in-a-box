@@ -1,0 +1,10 @@
+target/
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.db
+.env
+.env.*
+.idea/
+.vscode/
+.DS_Store

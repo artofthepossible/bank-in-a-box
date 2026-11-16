@@ -1,0 +1,401 @@
+# Backlog source of truth. `scripts/create_issues.py` turns this into GitHub issues.
+# Fields: id, title, wave, agent, labels (extra), depends_on (ids), day2 (optional), body.
+# Agents: architect | designer | backend | frontend | qa | security | devops | docs
+# Waves are only for display and for the orchestrator's "don't run more than 2 at once" rule.
+
+issues:
+  # ───────────────────────── WAVE 1 — Foundation ─────────────────────────
+  - id: 1
+    title: "ADRs: stack, money, persistence, SPA serving"
+    wave: 1
+    agent: architect
+    depends_on: []
+    body: |
+      Read `specs/SPEC.md`. Record the decisions as MADR files in `docs/adr/`.
+
+      ## Deliverables
+      - ADR-001 Dropwizard + JDBI 3 + PostgreSQL + Flyway (pin exact versions in the ADR)
+      - ADR-002 Money as `long` cents; BigDecimal only at the API edge
+      - ADR-003 Concurrency strategy for balance updates (conditional UPDATE vs `FOR UPDATE`) with a recommendation
+      - ADR-004 Serving the SPA from Dropwizard, including the `index.html` fallback approach
+      - ADR-005 How the agent team works (issue → agent → PR → review), referencing `.github/agents/`
+
+      ## Acceptance criteria
+      - [ ] Each ADR has context, options considered, decision, consequences
+      - [ ] Versions pinned in ADR-001 are real, current stable releases
+      - [ ] `docs/adr/README.md` indexes the ADRs
+      - [ ] No application code in this PR
+
+  - id: 2
+    title: "OpenAPI 3.1 contract for the bank API"
+    wave: 1
+    agent: architect
+    depends_on: [1]
+    body: |
+      Produce `specs/openapi.yaml` from SPEC §5 and §6.
+
+      ## Acceptance criteria
+      - [ ] All endpoints, request/response schemas, and the shared `ApiError` schema
+      - [ ] Every error code from the spec's table appears with the right HTTP status
+      - [ ] Examples for each success and each error response
+      - [ ] Passes an OpenAPI linter (add the lint step to the PR description, not to CI yet)
+
+  - id: 3
+    title: "Dropwizard project skeleton, config, and health endpoint"
+    wave: 1
+    agent: backend
+    depends_on: [1]
+    body: |
+      Create the Maven project and a runnable empty app.
+
+      ## Acceptance criteria
+      - [ ] `pom.xml` with Dropwizard BOM, shaded JAR, Java 21
+      - [ ] `BankApplication`, `BankConfiguration`, `config.yml` with env overrides per SPEC §9
+      - [ ] `GET /api/health` returns 200 JSON; `rootPath`/`jerseyRootPath` set so `/api/*` is Jersey and `/` stays free for static assets
+      - [ ] Admin port 8081 `/healthcheck` works
+      - [ ] One smoke test with `DropwizardAppExtension`
+      - [ ] `mvn verify` passes locally
+
+  - id: 4
+    title: "CI workflow: build and test backend (and frontend when present)"
+    wave: 1
+    agent: devops
+    depends_on: [3]
+    body: |
+      Add `.github/workflows/ci.yml`.
+
+      ## Acceptance criteria
+      - [ ] Triggers on pull_request and push to main
+      - [ ] Java 21 setup, Maven dependency caching, `mvn -B verify`
+      - [ ] Frontend job runs `npm ci && npm test && npm run build` only if `frontend/package.json` exists
+      - [ ] Test reports uploaded as artifacts
+      - [ ] Least-privilege `permissions:` block; actions pinned to full commit SHAs
+      - [ ] Job name `ci` so it can be a required status check
+
+  - id: 5
+    title: "Flyway schema: accounts and transactions"
+    wave: 1
+    agent: backend
+    depends_on: [3]
+    body: |
+      Add `V1__init.sql` and run migrations at startup.
+
+      ## Acceptance criteria
+      - [ ] `accounts(id uuid pk, name, email, balance_cents bigint not null check (>= 0), created_at timestamptz)`
+      - [ ] Unique index on `lower(email)`
+      - [ ] `transactions(id uuid pk, account_id fk, type, amount_cents bigint check (> 0), note, created_at timestamptz)` with an index on `(account_id, created_at desc)`
+      - [ ] Migrations run on startup; failure stops the app
+      - [ ] Integration test applies the migration to a Testcontainers Postgres
+
+  # ───────────────────────── WAVE 2 — Backend features ─────────────────────────
+  - id: 6
+    title: "Domain model, Money type, and JDBI DAOs"
+    wave: 2
+    agent: backend
+    depends_on: [5]
+    body: |
+      ## Acceptance criteria
+      - [ ] `Money` value type (cents, add/subtract, compare, parse from `BigDecimal` with ≤2 dp, format)
+      - [ ] `Account`, `Transaction`, `TransactionType` in `core/`
+      - [ ] `AccountDao`, `TransactionDao` (JDBI SQL objects) with row mappers
+      - [ ] Unit tests for `Money` edge cases: rounding rejection, overflow, zero, negatives
+      - [ ] No `double`/`float` in the codebase for money
+
+  - id: 7
+    title: "Error contract and exception mappers"
+    wave: 2
+    agent: backend
+    depends_on: [3]
+    body: |
+      Implement SPEC §5 error contract.
+
+      ## Acceptance criteria
+      - [ ] `ApiError(error, code)` record
+      - [ ] Mappers for validation (Hibernate Validator), JSON parse errors, domain exceptions, and a catch-all that never leaks stack traces
+      - [ ] Every response from the app, including 404 for unknown routes, is JSON
+      - [ ] Tests for each mapper
+
+  - id: 8
+    title: "Create account and get account"
+    wave: 2
+    agent: backend
+    depends_on: [2, 6, 7]
+    body: |
+      ## Acceptance criteria
+      - [ ] `POST /api/accounts` and `GET /api/accounts/{id}` match `specs/openapi.yaml`
+      - [ ] Duplicate email (case-insensitive) returns 409 `EMAIL_ALREADY_EXISTS`, including under a race
+      - [ ] `initial_deposit` > 0 creates account and DEPOSIT row in one DB transaction
+      - [ ] Unknown id returns 404 `ACCOUNT_NOT_FOUND`; malformed UUID returns 400
+      - [ ] Resource and service tests
+
+  - id: 9
+    title: "Deposit and withdraw, atomic and race-safe"
+    wave: 2
+    agent: backend
+    depends_on: [8]
+    body: |
+      Core ledger behaviour. Follow ADR-003.
+
+      ## Acceptance criteria
+      - [ ] `POST /deposit` and `POST /withdraw` per OpenAPI
+      - [ ] Balance update and transaction insert in one DB transaction
+      - [ ] Withdraw over balance returns 422 `INSUFFICIENT_FUNDS` and writes nothing
+      - [ ] Amount ≤ 0 or >2 decimals returns 400
+      - [ ] Test: 50 parallel withdrawals against a balance that covers only 10 — exactly 10 succeed, balance never negative
+
+  - id: 10
+    title: "Transaction history with pagination"
+    wave: 2
+    agent: backend
+    depends_on: [9]
+    body: |
+      ## Acceptance criteria
+      - [ ] `GET /api/accounts/{id}/transactions?page=&limit=` newest first
+      - [ ] Defaults page=1, limit=20; limit capped at 100; invalid values return 400
+      - [ ] Response includes `items`, `page`, `limit`, `total`
+      - [ ] Index from V1 is actually used (note the query plan in the PR)
+      - [ ] Tests for ordering, paging boundaries, empty history
+
+  - id: 11
+    title: "Stretch: transfers between accounts"
+    wave: 2
+    agent: backend
+    labels: [stretch]
+    depends_on: [9]
+    body: |
+      ## Acceptance criteria
+      - [ ] `POST /api/accounts/{id}/transfer` writes TRANSFER_OUT and TRANSFER_IN atomically
+      - [ ] Lock accounts in a consistent order (by id) so opposite transfers cannot deadlock
+      - [ ] Self-transfer returns 400; insufficient funds returns 422
+      - [ ] Test: 100 concurrent A→B and B→A transfers finish without deadlock and total money is conserved
+      - [ ] OpenAPI updated in the same PR
+
+  # ───────────────────────── WAVE 3 — Frontend ─────────────────────────
+  - id: 12
+    title: "Design system: tokens and component specs"
+    wave: 3
+    agent: designer
+    depends_on: [1]
+    body: |
+      Write design specs the frontend agent can implement without guessing. No React code here.
+
+      ## Deliverables
+      - `docs/design/tokens.md` (palette, type scale, spacing, radii, motion) from SPEC §7
+      - `docs/design/components.md`: AccountCard, TransactionForm, TransactionHistory, CreateAccountModal — states (default, focus, pending, error, empty), mobile and desktop layouts
+      - Balance shimmer: exact gradient stops, duration, and a `prefers-reduced-motion` fallback
+      - Accessibility notes: contrast ratios for every token pair, focus order, form error announcements
+
+      ## Acceptance criteria
+      - [ ] Text/background pairs meet WCAG AA
+      - [ ] ASCII or Mermaid wireframes for Home, Dashboard, Modal at two breakpoints
+
+  - id: 13
+    title: "Frontend scaffold: Vite, Tailwind, API client, React Query"
+    wave: 3
+    agent: frontend
+    depends_on: [2, 12]
+    body: |
+      ## Acceptance criteria
+      - [ ] `frontend/` Vite + React 18 + Tailwind configured with the design tokens
+      - [ ] `src/api/client.js` Axios instance, base URL `/api`, interceptor that normalises `{error, code}`
+      - [ ] React Query provider; Vite proxy `/api` → `http://localhost:8080`
+      - [ ] Inter and JetBrains Mono loaded (self-hosted or with a documented CDN choice)
+      - [ ] Vitest + Testing Library configured with one passing test
+      - [ ] `package-lock.json` committed
+
+  - id: 14
+    title: "Home page and Create Account modal"
+    wave: 3
+    agent: frontend
+    depends_on: [8, 13]
+    body: |
+      ## Acceptance criteria
+      - [ ] Home: centered search by account ID and "Create account" button
+      - [ ] Modal: name, email, optional initial deposit; client validation; inline backend errors (409 shown on the email field)
+      - [ ] On success, navigate to the new account dashboard
+      - [ ] Modal is keyboard accessible and traps focus
+      - [ ] Component tests for validation and error display
+
+  - id: 15
+    title: "Account dashboard: balance hero and deposit/withdraw forms"
+    wave: 3
+    agent: frontend
+    depends_on: [9, 14]
+    body: |
+      ## Acceptance criteria
+      - [ ] Large tabular-numeric balance with the shimmer from the design spec
+      - [ ] Deposit and withdraw forms side by side on desktop, stacked on mobile
+      - [ ] Optimistic update with pending state; roll back and show the server message on failure
+      - [ ] Balance and history queries invalidated after every mutation
+      - [ ] 422 `INSUFFICIENT_FUNDS` shown inline on the withdraw form
+      - [ ] Component tests including the rollback path
+
+  - id: 16
+    title: "Transaction history list"
+    wave: 3
+    agent: frontend
+    depends_on: [10, 15]
+    body: |
+      ## Acceptance criteria
+      - [ ] Scrollable list with type icon, signed amount in mono font, note, timestamp
+      - [ ] Pagination or infinite scroll against the paginated API
+      - [ ] Empty state text exactly: "No transactions yet — make your first deposit"
+      - [ ] Loading skeleton and error state
+      - [ ] Component tests
+
+  - id: 17
+    title: "Serve the React build from Dropwizard with SPA fallback"
+    wave: 3
+    agent: backend
+    depends_on: [3, 13]
+    body: |
+      Follow ADR-004.
+
+      ## Acceptance criteria
+      - [ ] Built frontend is served at `/`; `/api/*` is untouched
+      - [ ] Unknown non-API GET paths (e.g. `/accounts/abc`) return `index.html`; unknown `/api/*` still returns the JSON 404
+      - [ ] Cache headers: hashed assets long-lived, `index.html` no-cache
+      - [ ] Test covering the three behaviours above
+
+  # ───────────────────────── WAVE 4 — Quality & security ─────────────────────────
+  - id: 18
+    title: "Backend unit test hardening"
+    wave: 4
+    agent: qa
+    depends_on: [9]
+    body: |
+      ## Acceptance criteria
+      - [ ] Service-layer tests with mocked DAOs for every business rule in SPEC §6
+      - [ ] Property-style tests for `Money` (add/subtract inverse, no precision loss)
+      - [ ] JaCoCo configured; line coverage ≥ 80% on `service/` and `core/`, enforced in `mvn verify`
+      - [ ] Report any bug found as a new issue instead of silently fixing unrelated code
+
+  - id: 19
+    title: "Integration tests with Testcontainers"
+    wave: 4
+    agent: qa
+    depends_on: [10]
+    body: |
+      ## Acceptance criteria
+      - [ ] Full-stack tests against real Postgres for every endpoint and every error code
+      - [ ] Invariant test: after random mixed operations, balance equals the sum of transactions
+      - [ ] Concurrency tests for deposit/withdraw (and transfer if issue 11 is merged)
+      - [ ] Tests run in CI in under 5 minutes
+
+  - id: 20
+    title: "Frontend test coverage and a11y checks"
+    wave: 4
+    agent: qa
+    depends_on: [16]
+    body: |
+      ## Acceptance criteria
+      - [ ] Vitest coverage ≥ 80% on `src/components` and `src/api`
+      - [ ] `jest-axe` (or equivalent) assertions on Home, Modal, Dashboard
+      - [ ] Tests assert backend error messages render inline, not only in the console
+
+  - id: 21
+    title: "GitHub Advanced Security enablement as code"
+    wave: 4
+    agent: security
+    depends_on: [4]
+    body: |
+      Wire up GHAS using files in the repo wherever GitHub allows it. Settings that cannot be set from a PR go in `docs/security/enable-ghas.md` with exact click-paths or `gh api` commands.
+
+      ## Acceptance criteria
+      - [ ] `.github/workflows/codeql.yml` for `java-kotlin` and `javascript-typescript`, on PR, push to main, and weekly
+      - [ ] `.github/workflows/dependency-review.yml` failing on high severity and disallowed licenses
+      - [ ] `.github/dependabot.yml` for maven, npm, github-actions, docker; grouped updates; weekly
+      - [ ] `SECURITY.md` with reporting instructions
+      - [ ] `docs/security/enable-ghas.md`: secret scanning, push protection, code scanning default vs advanced, rulesets
+      - [ ] All workflow `permissions:` are least-privilege; actions pinned to SHAs
+
+  - id: 22
+    title: "Security review: threat model and money-path audit"
+    wave: 4
+    agent: security
+    depends_on: [10]
+    body: |
+      Review, don't rewrite. File findings as separate issues labelled `security`.
+
+      ## Deliverables
+      - `docs/security/threat-model.md` (STRIDE table for the API, DB, container)
+      - Review of: SQL construction, input validation, error leakage, CORS config, integer overflow in `Money`, race conditions, logging of PII
+      - Note explicitly that there is **no authentication** in this demo and what production would need
+
+      ## Acceptance criteria
+      - [ ] Each finding has severity, location, reproduction, and suggested fix
+      - [ ] Findings that are real bugs become separate issues, not drive-by edits
+
+  # ───────────────────────── WAVE 5 — Ship ─────────────────────────
+  - id: 23
+    title: "Dockerfile and docker-compose"
+    wave: 5
+    agent: devops
+    depends_on: [10, 17]
+    body: |
+      Follow SPEC §8.
+
+      ## Acceptance criteria
+      - [ ] 3-stage Dockerfile; dependency layers cached before sources; non-root user; `HEALTHCHECK` on `/api/health`
+      - [ ] `.dockerignore` excludes `node_modules`, `target`, `.git`, test sources, local env files
+      - [ ] `docker-compose.yml` with `app` + `postgres:16-alpine`, named volume, `depends_on` with health condition
+      - [ ] `docker compose up --build` works from a clean clone; `down` then `up` preserves accounts
+      - [ ] Image size reported in the PR; under 250 MB
+      - [ ] No secrets baked into the image; DB creds come from compose env
+
+  - id: 24
+    title: "Release pipeline: GHCR image, SBOM, provenance"
+    wave: 5
+    agent: devops
+    depends_on: [21, 23]
+    body: |
+      ## Acceptance criteria
+      - [ ] `.github/workflows/release.yml` on tag `v*`: build and push to GHCR, multi-arch
+      - [ ] SBOM generated and attached; build provenance attestation created
+      - [ ] GitHub Release with generated notes
+      - [ ] Image scanned before publish; workflow fails on critical findings
+      - [ ] Permissions limited to what each job needs (`packages: write`, `id-token: write`, `attestations: write`)
+
+  - id: 25
+    title: "Docs: README, quick start, and architecture"
+    wave: 5
+    agent: docs
+    depends_on: [23]
+    body: |
+      ## Acceptance criteria
+      - [ ] README: what it is, `docker compose up --build`, local dev (backend + frontend), env var table, API table, ASCII architecture diagram
+      - [ ] Every command in the README was executed and works
+      - [ ] Links to ADRs, OpenAPI, design docs, security docs
+      - [ ] Badges: CI, CodeQL, license
+      - [ ] Does not duplicate `DEMO-SCRIPT.md`; links to it
+
+  # ───────────────────────── Day-2 (created only with --include-day2) ─────────────────────────
+  - id: 26
+    title: "Feature: overdraft protection with a per-account limit"
+    wave: 6
+    agent: backend
+    labels: [day-2, feature]
+    day2: true
+    depends_on: []
+    body: |
+      Live-demo issue: assign to Copilot on stage.
+
+      ## Acceptance criteria
+      - [ ] Accounts have `overdraft_limit_cents` (default 0), set at creation, via a new Flyway migration
+      - [ ] Withdraw allowed while `balance + limit >= amount`
+      - [ ] Balance may go negative only within the limit; DB check constraint updated accordingly
+      - [ ] OpenAPI, tests, UI hint on the withdraw form updated in the same PR
+
+  - id: 27
+    title: "Feature: export statement as CSV"
+    wave: 6
+    agent: backend
+    labels: [day-2, feature]
+    day2: true
+    depends_on: []
+    body: |
+      ## Acceptance criteria
+      - [ ] `GET /api/accounts/{id}/transactions.csv?from=&to=` streams CSV
+      - [ ] Cells beginning with `=`, `+`, `-`, `@` are neutralised against CSV injection
+      - [ ] Dashboard gets a Download button
+      - [ ] Tests include the injection case

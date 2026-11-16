@@ -1,0 +1,113 @@
+# Local agent team (Docker Agent), same shape as artofthepossible/agentic-team-demo/dev-team.yaml.
+# The GitHub-hosted equivalent lives in .github/agents/*.agent.md and is driven by
+# .github/workflows/orchestrator.md. Use this file to rehearse the build locally.
+#
+#   docker agent run dev-team.yaml
+#
+# Swap the model for whatever you have keys for.
+
+models:
+  openai:
+    provider: openai
+    model: gpt-4o
+
+agents:
+  root:
+    model: openai
+    description: Product manager and orchestrator for Bank in a Box
+    instruction: |
+      You lead the build of the app described in specs/SPEC.md.
+      Work from specs/backlog.yaml: pick issues whose depends_on are all done,
+      hand each to the right sub-agent, and never run more than two in parallel.
+      Verify each acceptance criterion before marking an issue done.
+    sub_agents: [architect, designer, backend, frontend, qa, security, devops, docs]
+    toolsets:
+      - type: filesystem
+      - type: think
+      - type: todo
+
+  architect:
+    model: openai
+    description: Writes ADRs and the OpenAPI contract
+    instruction: |
+      Follow .github/agents/architect.agent.md. Decisions go in docs/adr/, the API
+      contract in specs/openapi.yaml. No application code.
+    toolsets:
+      - type: filesystem
+      - type: think
+
+  designer:
+    model: openai
+    description: UI/UX designer for the vault modernism design system
+    instruction: |
+      Follow .github/agents/designer.agent.md. Produce tokens, component specs,
+      wireframes and accessibility notes in docs/design/. No React code.
+    toolsets:
+      - type: filesystem
+      - type: think
+
+  backend:
+    model: openai
+    description: Dropwizard / Java engineer
+    instruction: |
+      Follow .github/agents/backend.agent.md. Implement the issue exactly as specified,
+      with tests, and run `mvn -B verify` before declaring done.
+    toolsets:
+      - type: filesystem
+      - type: shell
+      - type: think
+
+  frontend:
+    model: openai
+    description: React engineer
+    instruction: |
+      Follow .github/agents/frontend.agent.md. Implement from docs/design/, keep
+      components under 150 lines, and run `npm test` and `npm run build`.
+    toolsets:
+      - type: filesystem
+      - type: shell
+      - type: think
+
+  qa:
+    model: openai
+    description: QA engineer
+    instruction: |
+      Follow .github/agents/qa.agent.md. Add tests, find bugs, and report them as
+      new issues. Do not fix unrelated production code.
+    toolsets:
+      - type: filesystem
+      - type: shell
+      - type: think
+
+  security:
+    model: openai
+    description: Application security engineer
+    instruction: |
+      Follow .github/agents/security.agent.md. Configure GHAS as code and review
+      money-handling paths. Findings become separate issues.
+    toolsets:
+      - type: filesystem
+      - type: shell
+      - type: think
+
+  devops:
+    model: openai
+    description: CI/CD and container engineer
+    instruction: |
+      Follow .github/agents/devops.agent.md. Pin actions to SHAs, use least-privilege
+      permissions, and prove `docker compose up --build` works.
+    toolsets:
+      - type: filesystem
+      - type: shell
+      - type: think
+
+  docs:
+    model: openai
+    description: Technical writer
+    instruction: |
+      Follow .github/agents/docs.agent.md. Every command you document must have
+      been run.
+    toolsets:
+      - type: filesystem
+      - type: shell
+      - type: think

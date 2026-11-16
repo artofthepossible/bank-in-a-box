@@ -1,0 +1,89 @@
+# Bank in a Box — a repeatable GitHub platform demo
+
+A small bank (Dropwizard + React + PostgreSQL) **built by a team of agents** from a backlog of issues, orchestrated by GitHub Agentic Workflows and the Copilot cloud agent, then secured with GitHub Advanced Security and released with provenance.
+
+This repo ships the **team and the plan**, not the app. The app appears as agents close issues. Reset and rerun any time.
+
+## What this demonstrates
+
+| Area | Where you see it |
+|---|---|
+| **Core** — issues, dependencies, labels, PRs, rulesets, required checks | 25 spec-driven issues with `Blocked by` links; branch ruleset requiring the `ci` check |
+| **Workflows** — Actions and Agentic Workflows | `.github/workflows/orchestrator.md`, `standup.md` (agentic); CI, CodeQL, release (built by agents) |
+| **Copilot** — cloud agent, custom agents, instructions | `.github/agents/*.agent.md`, `.github/copilot-instructions.md`, issues assigned to Copilot |
+| **GitHub Advanced Security** | CodeQL, dependency review, Dependabot, secret scanning push protection (issue 21) |
+| **Supply chain** | GHCR image, SBOM, build provenance attestation (issue 24) |
+| **Universe / new releases** | Agentic Workflows GA (Oct 28, 2026) is wired in. Add further announcements to the slot in `DEMO-SCRIPT.md` |
+
+## How it works
+
+```
+ specs/backlog.yaml ──create_issues.py──► GitHub issues (labels, "Blocked by #N")
+                                              │
+        close issue / merge PR / every 2h     ▼
+ ┌──────────────────────────┐   assigns ≤2   ┌────────────────────────────┐
+ │ orchestrator (agentic wf)│───────────────►│ Copilot cloud agent        │
+ │ reads graph, unblocks,   │  + role label  │ follows .github/agents/<role> │
+ └──────────────────────────┘                └──────────────┬─────────────┘
+          ▲                                                  │ opens PR "Closes #N"
+          │                                                  ▼
+          └──────── merge ◄── CI + CodeQL + dependency review + human review
+```
+
+`dev-team.yaml` is the same team as a local Docker Agent config, for rehearsing without GitHub.
+
+### The agent team
+| Agent | Owns | Issues |
+|---|---|---|
+| architect | ADRs, OpenAPI | 1, 2 |
+| designer | design system specs | 12 |
+| backend | Dropwizard, ledger, DB | 3, 5–11, 17 |
+| frontend | React UI | 13–16 |
+| qa | unit, integration, a11y tests | 18–20 |
+| security | GHAS as code, threat model | 21, 22 |
+| devops | CI, Docker, release | 4, 23, 24 |
+| docs | README and guides | 25 |
+
+### Dependency waves
+```
+W1  1 ADRs ─► 2 OpenAPI        3 skeleton ─► 4 CI, 5 schema
+W2  6 domain ─► 8 accounts ─► 9 deposit/withdraw ─► 10 history   (7 errors, 11 transfers*)
+W3  12 design ─► 13 scaffold ─► 14 home ─► 15 dashboard ─► 16 history UI    17 serve SPA
+W4  18 unit  19 integration  20 frontend tests  21 GHAS  22 threat model
+W5  23 Docker ─► 24 release    25 docs
+Day-2 (live, optional)  26 overdraft protection  27 CSV export
+```
+\* stretch
+
+## Prerequisites
+
+- GitHub repo on github.com with Copilot enabled (Agentic Workflows GA covers Free, Team and Enterprise; the Copilot engine needs a Copilot license)
+- `gh` CLI, `python3` with `pip install pyyaml`
+- Two secrets (you create them; never commit values):
+  - `COPILOT_GITHUB_TOKEN` — lets the Copilot engine run agentic workflows
+  - `GH_AW_AGENT_TOKEN` — fine-grained PAT with issues and pull requests read/write, used by `assign-to-agent`
+- Repo settings: Actions allowed to create PRs; Copilot cloud agent enabled for the repo
+
+## Run it
+
+```bash
+gh repo create my-org/bank-in-a-box --private --source . --push
+./scripts/bootstrap.sh my-org/bank-in-a-box
+gh aw run orchestrator
+```
+
+Then watch: issue 1 (ADRs) is the only unblocked issue, so it goes first. After you merge it, issues 2, 3 and 12 unblock and the orchestrator starts two at a time.
+
+## Reset for the next demo
+
+```bash
+gh repo delete my-org/bank-in-a-box --yes     # or create a fresh repo from this template
+```
+Mark this repo as a **template repository** so each run starts clean.
+
+## Known caveats
+
+- The `.md` workflows have not been compiled here. Run `gh aw compile`, fix any frontmatter the compiler rejects, and commit the generated `.lock.yml` files. Frontmatter changes always need a recompile.
+- `assign-to-agent` can set a default custom agent but may not choose one per issue. The orchestrator therefore also comments the role, and `.github/copilot-instructions.md` tells Copilot to follow the `agent:` label. Confirm which behaviour your gh-aw version has.
+- The app has **no authentication** by design. The threat model says so.
+- JVM images are larger than the Go original's 50 MB target; this spec uses 250 MB.
